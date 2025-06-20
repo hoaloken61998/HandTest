@@ -2,6 +2,7 @@ package com.example.myapplication
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.graphics.PixelFormat // Added import
 import android.os.Bundle
 import android.util.Log
 import android.view.View
@@ -24,6 +25,8 @@ import com.google.mediapipe.examples.handlandmarker.HandLandmarkerHelper
 import com.google.mediapipe.tasks.vision.core.RunningMode
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import android.util.Size // Import for Size
+import android.widget.Button // Import Button
 
 class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListener {
 
@@ -34,6 +37,37 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
     private var imageAnalyzer: ImageAnalysis? = null
     private var modelDisplayFragment: ModelDisplayFragment? = null
     private lateinit var fragmentContainer: FrameLayout
+    private lateinit var switchCameraButton: Button
+    private var currentLensFacing = CameraSelector.LENS_FACING_FRONT // Default to front camera
+    private var currentModelName = "21.glb"
+
+    // Scaling and positioning constants
+    companion object {
+        private const val TAG = "MainActivity"
+
+        // Unified scale factors for consistency across all models
+        private const val UNIFIED_SCALE_FACTOR_FRONT = 25.0f
+        private const val UNIFIED_SCALE_FACTOR_BACK = 40.0f
+        private const val RING_FINGER_DIAMETER_RATIO = 0.22f // Tuned for ring finger
+
+        // Sensitivity for Z-depth based modulation of the scale factor
+        // 0.0f = no dynamic adjustment based on Z-depth (uses base factors directly)
+        // Positive value = makes ring relatively larger when hand is further, smaller when closer
+        // Negative value = makes ring relatively smaller when hand is further, larger when closer
+        // Tune this value to achieve the desired dynamic scaling effect.
+        private const val Z_MODULATION_SENSITIVITY = -0.1f
+
+        // Position scaling factors
+        private const val POSITION_SCALE_FACTOR_FRONT = 0.4f
+        private const val POSITION_SCALE_FACTOR_BACK = 0.6f // Increased for back camera
+
+        // Y-offset for model placement
+        private const val Y_OFFSET_FRONT = -0.25f
+        private const val Y_OFFSET_BACK = 0f // Increased for back camera
+
+        // Depth scale factor (kept common for now)
+        private const val DEPTH_SCALE_FACTOR = -0.1f
+    }
 
     // Flag to prevent multiple initializations of cameraProvider
     private var isCameraProviderInitialized = false
@@ -53,6 +87,10 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Attempt to make the window support translucency
+        window.setFormat(PixelFormat.TRANSLUCENT) // Add this line
+
         enableEdgeToEdge()
         setContentView(R.layout.activity_main)
         ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main)) { v, insets ->
@@ -72,6 +110,7 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
             modelDisplayFragment = supportFragmentManager.findFragmentById(R.id.fragment_container) as? ModelDisplayFragment
         }
 
+        // Restore camera and hand landmarking
         cameraExecutor = Executors.newSingleThreadExecutor()
 
         handLandmarkerHelper = HandLandmarkerHelper(
@@ -81,13 +120,64 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
             minHandTrackingConfidence = 0.5f,
             minHandPresenceConfidence = 0.5f,
             maxNumHands = 1,
+            currentDelegate = HandLandmarkerHelper.DELEGATE_GPU, // Using GPU delegate for potentially better performance
             handLandmarkerHelperListener = this
         )
 
         requestCameraPermission()
+
+        switchCameraButton = findViewById(R.id.button_switch_camera)
+        switchCameraButton.setOnClickListener {
+            switchCamera()
+        }
+
+        findViewById<Button>(R.id.button_model_21).setOnClickListener {
+            loadModel("21.glb")
+        }
+        findViewById<Button>(R.id.button_model_23).setOnClickListener {
+            loadModel("23.glb")
+        }
+        findViewById<Button>(R.id.button_model_27).setOnClickListener {
+            loadModel("27.glb")
+        }
+        findViewById<Button>(R.id.button_model_29).setOnClickListener {
+            loadModel("29.glb")
+        }
+    }
+
+    private fun loadModel(modelName: String) {
+        currentModelName = modelName
+        modelDisplayFragment?.stopRendering() // Stop rendering before hiding
+        fragmentContainer.visibility = View.GONE // Hide model immediately
+
+        // Reinitialize FilamentBridge in the fragment and load the new model
+        modelDisplayFragment?.reinitializeFilamentBridgeAndLoadModel(currentModelName) {
+            Log.d(TAG, "Filament reinitialization complete for model $currentModelName. Binding camera use cases.")
+            // Rebind camera use cases to ensure the preview is running
+            bindCameraUseCases()
+        }
+    }
+
+    private fun switchCamera() {
+        Log.d(TAG, "Switching camera. Current: ${if (currentLensFacing == CameraSelector.LENS_FACING_FRONT) "Front" else "Back"}")
+        modelDisplayFragment?.stopRendering() // Stop rendering before hiding
+        fragmentContainer.visibility = View.GONE // Hide model immediately
+
+        // Reinitialize FilamentBridge in the fragment and bind camera use cases in the callback
+        modelDisplayFragment?.reinitializeFilamentBridgeAndLoadModel(currentModelName) {
+            Log.d(TAG, "Filament reinitialization complete. Binding camera use cases.")
+            currentLensFacing = if (currentLensFacing == CameraSelector.LENS_FACING_BACK) {
+                CameraSelector.LENS_FACING_FRONT
+            } else {
+                CameraSelector.LENS_FACING_BACK
+            }
+            // Rebind camera use cases with the new lens facing AFTER filament is ready
+            bindCameraUseCases()
+        }
     }
 
     private fun requestCameraPermission() {
+        // Restore camera and hand landmarking
         when {
             ContextCompat.checkSelfPermission(
                 this,
@@ -108,6 +198,7 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
 
     // New method to consolidate camera setup logic trigger
     private fun ensureCameraIsSetupAndRunning() {
+        // Restore camera and hand landmarking
         // Ensure HandLandmarkerHelper is ready
         if (handLandmarkerHelper.isClose()) {
             handLandmarkerHelper.setupHandLandmarker()
@@ -120,18 +211,18 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
             // Provider exists, just (re)bind use cases.
             bindCameraUseCases()
         }
-        // If cameraProvider is null but isCameraProviderInitialized is true,
-        // it means setupCameraProvider was called but might be in progress.
-        // The listener in setupCameraProvider will call bindCameraUseCases.
     }
 
     // Renamed from setupCamera and modified
     private fun setupCameraProvider() {
+        // Restore camera and hand landmarking
         if (isCameraProviderInitialized && cameraProvider != null) { // Guard against re-entry if already succeeded
             bindCameraUseCases() // If provider is already there, just bind
             return
         }
-        if (isCameraProviderInitialized && cameraProvider == null) { // Guard against re-entry if in progress
+        // Simplified guard: If initialization has been started, don't restart it.
+        // The listener will eventually set cameraProvider or handle failure.
+        if (isCameraProviderInitialized) {
             return
         }
 
@@ -154,6 +245,7 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
     }
 
     private fun bindCameraUseCases() {
+        // Restore camera and hand landmarking
         val cameraProvider = cameraProvider ?: run {
             Log.e(TAG, "Camera provider not available for binding use cases.")
             // Optionally, try to re-initiate setup if isCameraProviderInitialized is false
@@ -165,21 +257,23 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
         }
 
         val cameraSelector = CameraSelector.Builder()
-            .requireLensFacing(CameraSelector.LENS_FACING_FRONT)
+            .requireLensFacing(currentLensFacing // Use currentLensFacing variable
+            )
             .build()
 
         val previewView = findViewById<androidx.camera.view.PreviewView>(R.id.preview_view)
+        previewView.implementationMode = androidx.camera.view.PreviewView.ImplementationMode.COMPATIBLE // Added this line
         val preview = Preview.Builder()
-            .setTargetAspectRatio(AspectRatio.RATIO_4_3)
-            .setTargetRotation(previewView.display.rotation)
+            // .setTargetAspectRatio(AspectRatio.RATIO_4_3) // Removed deprecated call; CameraX will attempt to select a suitable aspect ratio.
+            .setTargetRotation(previewView.display.rotation) // Depends on previewView
             .build()
-            .also {
+            .also { // Depends on previewView
                 it.setSurfaceProvider(previewView.surfaceProvider)
             }
 
         imageAnalyzer = ImageAnalysis.Builder()
-            .setTargetAspectRatio(AspectRatio.RATIO_4_3)
-            .setTargetRotation(previewView.display.rotation)
+            // .setTargetAspectRatio(AspectRatio.RATIO_4_3) // Removed deprecated call; CameraX will attempt to select a suitable aspect ratio.
+            .setTargetRotation(previewView.display.rotation) // Depends on previewView
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
             .build()
@@ -202,10 +296,11 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
     }
 
     private fun detectHand(imageProxy: ImageProxy) {
+        // Restore camera and hand landmarking
         try {
             handLandmarkerHelper.detectLiveStream(
                 imageProxy = imageProxy,
-                isFrontCamera = true
+                isFrontCamera = (currentLensFacing == CameraSelector.LENS_FACING_FRONT) // Dynamically set based on currentLensFacing
             )
         } catch (e: Exception) {
             Log.e(TAG, "Error during hand detection in detectHand method: ${e.message}", e)
@@ -216,41 +311,112 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
         runOnUiThread {
             if (resultBundle.results.isNotEmpty()) {
                 val handLandmarkerResult = resultBundle.results.first()
-                if (handLandmarkerResult.landmarks().isNotEmpty()) {
-                    fragmentContainer.visibility = View.VISIBLE
-                    val landmark = handLandmarkerResult.landmarks().first().get(12)
 
-                    val scaleFactorX = 10.0f
-                    val scaleFactorY = -10.0f
-                    val scaleFactorZ = 5.0f
+                // 2. Check for sufficient landmarks for the ring finger
+                if (handLandmarkerResult.landmarks().isNotEmpty() &&
+                    handLandmarkerResult.landmarks().first().size > 15 &&  // Need up to index 15 (RING_FINGER_DIP)
+                    handLandmarkerResult.worldLandmarks().isNotEmpty() &&
+                    handLandmarkerResult.worldLandmarks().first().size >= HandLandmarkerHelper.MIN_WORLD_LANDMARKS_FOR_DIAMETER) {
 
-                    val x = (landmark.x() - 0.5f) * scaleFactorX
-                    val y = (landmark.y() - 0.5f) * scaleFactorY
-                    val z = (landmark.z() * scaleFactorZ) - 2.0f
+                    fragmentContainer.visibility = View.VISIBLE // Show when hand is detected
 
-                    Log.d(TAG, "Landmark 0: x=${landmark.x()}, y=${landmark.y()}, z=${landmark.z()}")
-                    Log.d(TAG, "Transformed to: x=$x, y=$y, z=$z")
+                    val landmarks = handLandmarkerResult.landmarks().first()
+                    val worldLandmarks = handLandmarkerResult.worldLandmarks().first()
 
-                    modelDisplayFragment?.updateModelPosition(x, y, z)
+                    // 3. Use screen landmarks for positioning and world landmarks for orientation
+                    val pip_screen = landmarks[14] // RING_FINGER_PIP
+                    val dip_screen = landmarks[15] // RING_FINGER_DIP
+
+                    // Anchor point is the midpoint of the ring segment on screen
+                    val anchorXNorm = (pip_screen.x() + dip_screen.x()) / 2f
+                    val anchorYNorm = (pip_screen.y() + dip_screen.y()) / 2f
+                    val anchorZNorm = (pip_screen.z() + dip_screen.z()) / 2f
+
+                    // Adjust these factors to control sensitivity and range of movement
+                    val positionScaleFactor: Float
+                    val yOffset: Float
+                    val baseModelSpecificScaleFactor: Float
+
+                    if (currentLensFacing == CameraSelector.LENS_FACING_FRONT) {
+                        positionScaleFactor = POSITION_SCALE_FACTOR_FRONT
+                        yOffset = Y_OFFSET_FRONT
+                        baseModelSpecificScaleFactor = UNIFIED_SCALE_FACTOR_FRONT
+                    } else { // Back camera
+                        positionScaleFactor = POSITION_SCALE_FACTOR_BACK
+                        yOffset = Y_OFFSET_BACK
+                        baseModelSpecificScaleFactor = UNIFIED_SCALE_FACTOR_BACK
+                    }
+
+                    val depthScaleFactor = DEPTH_SCALE_FACTOR // Common for now
+
+                    val imageAspectRatio = resultBundle.inputImageWidth.toFloat() / resultBundle.inputImageHeight.toFloat()
+                    val landmarkZ = anchorZNorm // Use anchor's Z for depth calculation
+
+                    // Dynamically adjust the modelSpecificScaleFactor based on landmarkZ
+                    val zModulation = 1.0f + (landmarkZ - 0.5f) * Z_MODULATION_SENSITIVITY
+                    val dynamicModelSpecificScaleFactor = baseModelSpecificScaleFactor * zModulation.coerceIn(0.8f, 1.2f)
+
+                    // Convert normalized landmark coordinates to world coordinates
+                    val x = (anchorXNorm - 0.5f) * positionScaleFactor * imageAspectRatio
+                    val y = ((0.5f - anchorYNorm) * positionScaleFactor) + yOffset
+                    val z = landmarkZ * depthScaleFactor
+
+                    // Calculate finger direction vector using WORLD LANDMARKS for stable 3D orientation
+                    val pip_world = worldLandmarks[14]
+                    val dip_world = worldLandmarks[15]
+                    var fingerDirX = dip_world.x() - pip_world.x()
+                    var fingerDirY = dip_world.y() - pip_world.y()
+                    var fingerDirZ = dip_world.z() - pip_world.z()
+
+                    // Normalize the direction vector
+                    val len = kotlin.math.sqrt(fingerDirX*fingerDirX + fingerDirY*fingerDirY + fingerDirZ*fingerDirZ)
+                    if (len > 0.0001f) {
+                        fingerDirX /= len
+                        fingerDirY /= len
+                        fingerDirZ /= len
+                    } else {
+                        fingerDirX = 0f
+                        fingerDirY = 1f // Default to pointing up
+                        fingerDirZ = 0f
+                    }
+
+                    // 4. Estimate finger diameter using world landmarks and a ratio for the ring finger
+                    val estimatedFingerDiameter = HandLandmarkerHelper.estimateFingerDiameter(worldLandmarks, RING_FINGER_DIAMETER_RATIO)
+
+                    // 5. Apply a unified scale across all models
+                    val dynamicScale = estimatedFingerDiameter * dynamicModelSpecificScaleFactor
+
+                    val transformMatrix = calculateTransformMatrix(x, y, z, dynamicScale, fingerDirX, fingerDirY, fingerDirZ, currentModelName)
+
+                    Log.d(TAG, "Ring Finger. PIP: (x=${pip_screen.x()}, y=${pip_screen.y()}, z=${landmarkZ}), Est. Diameter: ${"%.4f".format(estimatedFingerDiameter)}m, Final DynScale: ${"%.4f".format(dynamicScale)}")
+                    modelDisplayFragment?.updateModelTransform(transformMatrix)
+                    modelDisplayFragment?.startRendering() // Start/ensure rendering is active when model is visible
                 } else {
-                    fragmentContainer.visibility = View.GONE
+                    Log.d(TAG, "No hand or not enough landmarks detected for ring finger, hiding model and stopping rendering.")
+                    modelDisplayFragment?.stopRendering()
+                    fragmentContainer.visibility = View.GONE // Hide if no landmarks or not enough landmarks
                 }
             } else {
-                fragmentContainer.visibility = View.GONE
+                Log.d(TAG, "No results from HandLandmarker, hiding model and stopping rendering.")
+                modelDisplayFragment?.stopRendering()
+                fragmentContainer.visibility = View.GONE // Hide if no results
             }
         }
     }
 
     override fun onError(error: String, errorCode: Int) {
+        // Restore camera and hand landmarking
         runOnUiThread {
             Log.e(TAG, "HandLandmarkerHelper Error: $error (Code: $errorCode)")
             Toast.makeText(this, "MediaPipe Error: $error", Toast.LENGTH_SHORT).show()
-            fragmentContainer.visibility = View.GONE
+            modelDisplayFragment?.stopRendering()
+            fragmentContainer.visibility = View.GONE // Hide on error
         }
     }
 
     override fun onResume() {
         super.onResume()
+        // Restore camera and hand landmarking
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
             ensureCameraIsSetupAndRunning()
         }
@@ -258,6 +424,7 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
 
     override fun onPause() {
         super.onPause()
+        // Restore camera and hand landmarking
         // It's good practice to unbind camera use cases in onPause to release the camera
         // and prevent issues when the app is paused.
         // cameraProvider?.unbindAll() // Consider adding this if not already handled by lifecycle or specific needs.
@@ -266,12 +433,121 @@ class MainActivity : AppCompatActivity(), HandLandmarkerHelper.LandmarkerListene
 
     override fun onDestroy() {
         super.onDestroy()
+        // Restore camera and hand landmarking
         cameraExecutor.shutdown()
         handLandmarkerHelper.clearHandLandmarker()
-        // cameraProvider?.unbindAll() // Ensure camera is released if not done elsewhere.
+        cameraProvider?.unbindAll() // Ensure camera is released
     }
 
-    companion object {
-        private const val TAG = "MainActivity"
+    private fun calculateTransformMatrix(x: Float, y: Float, z: Float, dynamicScale: Float, fingerDirX: Float, fingerDirY: Float, fingerDirZ: Float, modelName: String): FloatArray {
+        // The finger direction vector, which will align with the ring's axis (Y-axis).
+        val modelY_aligned = normalize(floatArrayOf(fingerDirX, fingerDirY, fingerDirZ))
+
+        // The desired "up" for the ring (Z-axis) is to point towards the world's Y-axis.
+        val upVector = floatArrayOf(0f, 1f, 0f)
+
+        // Make the model's Z-axis orthogonal to its Y-axis (the finger direction)
+        // using Gram-Schmidt orthogonalization.
+        val dotProd = dot(upVector, modelY_aligned)
+        val projectedZ = floatArrayOf(
+            upVector[0] - dotProd * modelY_aligned[0],
+            upVector[1] - dotProd * modelY_aligned[1],
+            upVector[2] - dotProd * modelY_aligned[2]
+        )
+
+        var modelZ_aligned: FloatArray
+        val lenSq = projectedZ[0] * projectedZ[0] + projectedZ[1] * projectedZ[1] + projectedZ[2] * projectedZ[2]
+        if (lenSq < 0.00001f) {
+            // modelY_aligned is collinear with upVector (finger pointing up/down).
+            // Pick an alternative "up" vector.
+            val alternativeUp = floatArrayOf(1f, 0f, 0f) // World X-axis
+            val dotProd2 = dot(alternativeUp, modelY_aligned)
+            val projectedZ2 = floatArrayOf(
+                alternativeUp[0] - dotProd2 * modelY_aligned[0],
+                alternativeUp[1] - dotProd2 * modelY_aligned[1],
+                alternativeUp[2] - dotProd2 * modelY_aligned[2]
+            )
+            modelZ_aligned = normalize(projectedZ2)
+        } else {
+            modelZ_aligned = normalize(projectedZ)
+        }
+
+        // The model's X-axis is the cross product of Y and Z, completing the orthonormal basis.
+        val modelX_aligned = normalize(cross(modelY_aligned, modelZ_aligned))
+
+        // Base axes
+        val baseX = modelX_aligned
+        val baseY = modelY_aligned
+        val baseZ = modelZ_aligned
+
+        // Final axes after model-specific rotation
+        val finalX: FloatArray
+        val finalY: FloatArray
+        val finalZ: FloatArray
+
+        when (modelName) {
+            "29.glb" -> { // Rotate 90 degrees
+                finalX = baseZ
+                finalY = baseY
+                finalZ = floatArrayOf(-baseX[0], -baseX[1], -baseX[2])
+            }
+            "21.glb" -> {
+                val theta = -15.0f * kotlin.math.PI.toFloat() / 180.0f // -15 degrees
+                val cos_t = kotlin.math.cos(theta)
+                val sin_t = kotlin.math.sin(theta)
+
+                // The original orientation for this model is finalX=baseY, finalY=baseZ, finalZ=baseX.
+                // We are rotating this orientation around its Y-axis (baseZ) to turn it left.
+                finalX = floatArrayOf(
+                    baseY[0] * cos_t + baseX[0] * sin_t,
+                    baseY[1] * cos_t + baseX[1] * sin_t,
+                    baseY[2] * cos_t + baseX[2] * sin_t
+                )
+                finalY = baseZ
+                finalZ = floatArrayOf(
+                    -baseY[0] * sin_t + baseX[0] * cos_t,
+                    -baseY[1] * sin_t + baseX[1] * cos_t,
+                    -baseY[2] * sin_t + baseX[2] * cos_t
+                )
+            }
+            "23.glb", "27.glb" -> { // Stand perpendicular
+                finalX = floatArrayOf(-baseX[0], -baseX[1], -baseX[2])
+                finalY = baseZ
+                finalZ = baseY
+            }
+            else -> { // Default orientation
+                finalX = baseX
+                finalY = baseY
+                finalZ = baseZ
+            }
+        }
+
+        val s = dynamicScale
+
+        // Construct the column-major transformation matrix.
+        return floatArrayOf(
+            s * finalX[0], s * finalX[1], s * finalX[2], 0f,
+            s * finalY[0], s * finalY[1], s * finalY[2], 0f,
+            s * finalZ[0], s * finalZ[1], s * finalZ[2], 0f,
+            x, y, z, 1f
+        )
+    }
+
+    private fun dot(a: FloatArray, b: FloatArray): Float {
+        return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+    }
+
+    private fun normalize(v: FloatArray): FloatArray {
+        val len = kotlin.math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+        if (len == 0f) return floatArrayOf(0f, 0f, 0f)
+        return floatArrayOf(v[0] / len, v[1] / len, v[2] / len)
+    }
+
+    private fun cross(a: FloatArray, b: FloatArray): FloatArray {
+        return floatArrayOf(
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0]
+        )
     }
 }

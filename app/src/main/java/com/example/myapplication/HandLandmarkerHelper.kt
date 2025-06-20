@@ -349,6 +349,45 @@ class HandLandmarkerHelper(
         const val DEFAULT_NUM_HANDS = 1
         const val OTHER_ERROR = 0
         const val GPU_ERROR = 1
+        const val MIN_WORLD_LANDMARKS_FOR_DIAMETER = 18 // Minimum number of world landmarks needed for diameter estimation (to access index 17)
+
+        /**
+         * Estimates a finger diameter in meters based on palm width.
+         * Assumes worldLandmarks are in meters.
+         *
+         * @param handWorldLandmarks A list of 21 Landmark objects for a single hand, in world coordinates (meters).
+         * @param palmWidthToFingerDiameterRatio Ratio to convert palm width to finger diameter. This is a tunable parameter.
+         * @return Estimated finger diameter in meters, or a default small value if calculation fails.
+         */
+        fun estimateFingerDiameter(
+            handWorldLandmarks: List<com.google.mediapipe.tasks.components.containers.Landmark>,
+            palmWidthToFingerDiameterRatio: Float
+        ): Float {
+            // MediaPipe Hand Landmark indices:
+            // INDEX_FINGER_MCP: 5
+            // PINKY_MCP: 17
+            if (handWorldLandmarks.size < MIN_WORLD_LANDMARKS_FOR_DIAMETER) { // Check against the defined constant
+                Log.w(TAG, "Not enough world landmarks to estimate finger diameter (${handWorldLandmarks.size}, need $MIN_WORLD_LANDMARKS_FOR_DIAMETER). Returning default.")
+                return 0.01f // Default diameter: 1cm
+            }
+
+            val indexMcp = handWorldLandmarks[5]
+            val pinkyMcp = handWorldLandmarks[17]
+
+            val dx = indexMcp.x() - pinkyMcp.x()
+            val dy = indexMcp.y() - pinkyMcp.y()
+            val dz = indexMcp.z() - pinkyMcp.z()
+
+            // Calculate the 3D distance between index and pinky MCP joints (palm width)
+            val palmWidth = kotlin.math.sqrt(dx*dx + dy*dy + dz*dz)
+
+            // Estimate finger diameter as a fraction of palm width
+            val estimatedDiameter = palmWidth * palmWidthToFingerDiameterRatio
+
+            // Log.d(TAG, "Palm width: ${"%.3f".format(palmWidth)}m, Est. Finger Diameter: ${"%.3f".format(estimatedDiameter)}m (ratio: $palmWidthToFingerDiameterRatio)")
+
+            return estimatedDiameter
+        }
     }
 
     data class ResultBundle(
