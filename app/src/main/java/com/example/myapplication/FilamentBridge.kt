@@ -114,7 +114,7 @@ class FilamentBridge(private val context: Context, private val surfaceView: Surf
         // Adjust camera exposure for a brighter scene
         // Aperture (f-stop), Shutter speed (seconds), Sensitivity (ISO)
         // Default is f/16, 1/125s, 100 ISO. Increasing ISO makes it brighter.
-        camera.setExposure(16.0f, 1.0f / 125.0f, 200.0f) // Increased ISO to 200
+        camera.setExposure(16.0f, 1.0f / 125.0f, 270.0f) // Increased ISO to 400
 
         // cameraManipulator = Manipulator.Builder() // Removed manipulator setup
         //     .targetPosition(0.0f, 0.0f, 0.0f)
@@ -127,7 +127,7 @@ class FilamentBridge(private val context: Context, private val surfaceView: Surf
         // Setup a default indirect light with a simple color
         // This provides some ambient lighting to the scene.
         // You can adjust the intensity and color as needed.
-        val indirectLightIntensity = 100_000.0f // Example intensity, increased from 50_000
+        val indirectLightIntensity = 130_000.0f // Example intensity, increased from 100_000
         scene.indirectLight = IndirectLight.Builder()
             .intensity(indirectLightIntensity)
             // Optionally, you can set a reflection map, but for a simple default,
@@ -139,7 +139,7 @@ class FilamentBridge(private val context: Context, private val surfaceView: Surf
         val lightEntity = EntityManager.get().create()
         LightManager.Builder(LightManager.Type.SUN)
             .color(1.0f, 1.0f, 1.0f) // Changed to neutral white
-            .intensity(160_000.0f) // Reduced intensity, increased from 80_000
+            .intensity(200_000.0f) // Reduced intensity, increased from 160_000
             .direction(0.28f, -0.6f, -0.75f) // Pointing somewhat from front-right-top
             .sunAngularRadius(1.9f)
             .castShadows(false) // Disabled shadow casting for performance
